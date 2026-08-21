@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '发布标签（如 v1.0.1，留空则自动按版本号生成）'
+        description: '发布标签（留空则自动生成 v版本号-runNumber，保证唯一）'
         required: false
         default: ''
       release_notes:
@@ -68,21 +68,12 @@ jobs:
       - name: Determine release tag
         id: tag
         run: |
-          # 拉取远端 tag（checkout 默认浅克隆且不含 tag），用于查重
-          git fetch --tags --force origin
           if [ -n "${{ github.event.inputs.release_tag }}" ]; then
-            TAG="${{ github.event.inputs.release_tag }}"
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
           else
-            TAG="v${{ steps.version.outputs.version }}"
+            # 使用 GitHub Actions 的 run_number 保证 tag 全局唯一，无需额外查重逻辑
+            echo "tag=v${{ steps.version.outputs.version }}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
-          # 保证 tag 唯一，避免覆盖已有 Release
-          BASE="$TAG"
-          SUFFIX=1
-          while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            TAG="$BASE-$SUFFIX"
-            SUFFIX=$((SUFFIX + 1))
-          done
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
