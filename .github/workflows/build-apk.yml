@@ -1,0 +1,113 @@
+# 手动触发的 APK 云端构建与发布流水线
+# 使用方式：GitHub 仓库 → Actions → Build & Release APK → Run workflow
+name: Build & Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '发布标签（如 v1.0.1，留空则自动按版本号生成）'
+        required: false
+        default: ''
+      release_notes:
+        description: '发布说明（可选）'
+        required: false
+        default: ''
+
+# 允许创建 Release（写入仓库内容）
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build APK (Release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.1
+          channel: stable
+          cache: true
+
+      - name: Show Flutter version
+        run: flutter --version
+
+      - name: Install pub dependencies
+        run: flutter pub get
+
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze project source
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Read app version
+        id: version
+        run: |
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d '+' -f 1)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          # 拉取远端 tag（checkout 默认浅克隆且不含 tag），用于查重
+          git fetch --tags --force origin
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="v${{ steps.version.outputs.version }}"
+          fi
+          # 保证 tag 唯一，避免覆盖已有 Release
+          BASE="$TAG"
+          SUFFIX=1
+          while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG="$BASE-$SUFFIX"
+            SUFFIX=$((SUFFIX + 1))
+          done
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dice-roll-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: 灵动骰子 ${{ steps.tag.outputs.tag }}
+          body: |
+            ${{ github.event.inputs.release_notes }}
+
+            ## 灵动骰子 v${{ steps.version.outputs.version }}
+
+            - 手动触发构建：${{ github.event_name }}
+            - 构建分支：${{ github.ref_name }}
+            - 提交：${{ github.sha }}
+
+            ### 安装说明
+            下载下方 `app-release.apk`，在安卓手机上允许安装未知来源应用后即可安装。
+          files: build/app/outputs/flutter-apk/app-release.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
